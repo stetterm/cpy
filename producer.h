@@ -20,9 +20,7 @@
 // implementation. Contains a pthread
 // and the information needed to
 // read from a file and send the
-// data to the consumer. This
-// requires the use of two semaphores
-// stored in this struct.
+// data to the consumer.
 typedef struct producer producer_t;
 
 /**
