@@ -10,12 +10,14 @@
  */
 
 #include "buffer.h"
+#include "cpy.h"
 #include "producer.h"
 
 #include <fcntl.h>
 #include <pthread.h>
 #include <semaphore.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 // Necessary synchronization primitives
@@ -23,8 +25,9 @@
 // to the buffer.
 typedef struct producer {
   char *in_file;	// Name of the file to read from
-  pthread_t thread;	// Producer's thread of execution
+  pthread_t *thread;	// Producer's thread of execution
   buffer_t *buf;	// The buffer struct to write to
+  unsigned int write;	// The index to write to the shared buffer at
 } producer_t;
 
 /**
@@ -39,23 +42,43 @@ typedef struct producer {
  */
 void send_data(producer_t *p, char *d, int length) {
   
-  // Wait until there are empty spaces in
-  // the buffer, and then acquire the mutex lock
-  sem_wait(&p->buf->empty_spaces);
-  pthread_mutex_lock(&p->buf->mutex);
-  
+  // Get the block number and mutex
+  // for the block the producer wants
+  // to write to
+  unsigned int cur_block = p->write / NUM_BLOCKS;
+  pthread_mutex_t *cur_mutex = &p->buf->buf[cur_block].mutex;
+  unsigned int end_of_block = p->write - (p->write % BLOCK_SIZE) + BLOCK_SIZE;
+
   for (int i = 0; i < length; i++) {
     
+    // Wait until there are empty spaces in
+    // the buffer, and then acquire the mutex lock
+    sem_wait(&p->buf->empty_spaces);
+    pthread_mutex_lock(cur_mutex);
+
     // Write a new byte in the buffer and
     // increment the field variables
-    p->buf->buf[p->buf->write] = d[i];
-    p->buf->write = (p->buf->write + 1) % BUFFER_SIZE;
-  }
+    p->buf->buf[cur_block].blk[p->write % BLOCK_SIZE] = d[i];
 
-  // Release the mutex lock and increment
-  // the full spaces semaphore
-  pthread_mutex_unlock(&p->buf->mutex);
-  sem_post(&p->buf->full_spaces);
+    // Alert the consumer about the new
+    // characters to read and release
+    // the mutex lock
+    pthread_mutex_unlock(cur_mutex);
+    sem_post(&p->buf->full_spaces);
+    
+    // Increment the index for writing to the buffer
+    p->write = (p->write + 1) % BUFFER_SIZE;
+    
+    // If the loop has entered a new block,
+    // change the mutex and cur_block
+    if (p->write == end_of_block) {
+      cur_block = (cur_block + 1) % NUM_BLOCKS;
+      cur_mutex = &p->buf->buf[cur_block].mutex;
+      end_of_block = (end_of_block + BLOCK_SIZE) % BUFFER_SIZE;
+    }
+
+    log("Producer wrote character %c to buffer\n", d[i]);
+  }
 }
 
 /** 
@@ -80,11 +103,15 @@ void *prod_target(void *args) {
     return NULL;
   }
 
+  log("Producer successfully opened file %s\n", p->in_file);
+
   // Initialize file reading variables and read
   // the first block of data from the input file
   ssize_t status;
-  char temp_buf[TEMP_BUFFER_SIZE];
-  status = read(fd, temp_buf, TEMP_BUFFER_SIZE);
+  char temp_buf[PROD_BUFFER_SIZE];
+  status = read(fd, temp_buf, PROD_BUFFER_SIZE);
+
+  log("Producer read %ld bytes from file %s\n", status, p->in_file);
 
   // While there are still bytes to be read from
   // the input file, push each character to
@@ -97,7 +124,9 @@ void *prod_target(void *args) {
     send_data(p, temp_buf, status);
 
     // Read the next block of data from the file
-    status = read(fd, temp_buf, TEMP_BUFFER_SIZE);
+    status = read(fd, temp_buf, PROD_BUFFER_SIZE);
+
+    log("Producer read %ld bytes from file %s\n", status, p->in_file);
   }
 
   // Send the null byte to terminate
@@ -110,36 +139,74 @@ void *prod_target(void *args) {
     fprintf(stderr, "Producer thread could not close file: %s\n", p->in_file);
   }
 
+  log("Producer successfully closed file %s\n", p->in_file);
+
   return NULL;
 }
 
 // Function to initialize the producer
 // struct before the file copy
 // can begin.
-int producer_init(producer_t *p, char *file_name, buffer_t *buf) {
-  if (file_name == NULL) return 1;
+producer_t *producer_init(char *file_name, buffer_t *buf) {
+  if (file_name == NULL) return NULL;
+
+  // Allocate enough heap memory for the
+  // producer struct itself
+  producer_t *ptmp;
+  ptmp = (producer_t *)malloc(sizeof(producer_t));
+  if (ptmp == NULL) {
+    perror("Could not allocate memory for producer struct\n");
+    return NULL;
+  }
+  producer_t *p = ptmp;
+
+  log("Successfully allocated memory for the producer struct\n");
 
   // Store the file name and
   // the buffer struct in the
   // producer struct
   p->in_file = file_name;
   p->buf = buf;
+  p->write = 0;
 
   // Spawn the producer thread
-  if (pthread_create(&p->thread, NULL, &prod_target, p) != 0) {
+  pthread_t *temp;
+  temp = (pthread_t *)malloc(sizeof(pthread_t));
+  if (temp == NULL) {
+    perror("Could not allocate memory for the thread\n");
+    return NULL;
+  }
+  p->thread = temp;
+
+  log("Successfully allocated memory for the producer thread\n");
+
+  if (pthread_create(p->thread, NULL, &prod_target, p) != 0) {
     perror("Could not initialize producer thread\n");
-    return 1;
+    return NULL;
   }
 
-  return 0;
+  log("Successfully started producer thread\n");
+
+  return p;
 }
 
 // Join on the producer's thread
 // of execution.
 int producer_join(producer_t *p) {
 
+  log("Main thread joining on producer thread\n");
+
   // Join on the internal thread
-  pthread_join(p->thread, NULL);
+  pthread_join(*p->thread, NULL);
+
+  // When the producer is finished,
+  // free the thread's memory
+  free(p->thread);
+
+  // Free the producer struct
+  free(p);
+
+  log("Main thread freed producer memory\n");
 
   return 0;
 }

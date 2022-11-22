@@ -1,7 +1,7 @@
 CC = gcc
 CFLAGS = -g -std=c11 -pthread
 
-DEPS = consumer.h producer.h buffer.h
+DEPS = cpy.h consumer.h producer.h buffer.h
 OBJ = cpy.o consumer.o producer.o buffer.o
 
 %.o: %.c $(DEPS) 

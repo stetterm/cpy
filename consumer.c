@@ -10,10 +10,12 @@
 
 #include "buffer.h"
 #include "consumer.h"
+#include "cpy.h"
 
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 // Control struct used for
@@ -22,14 +24,10 @@
 // file copy.
 typedef struct consumer {
   char *out_file;	// Name of the file to write to
-  pthread_t thread;	// Consumer's thread of execution
+  pthread_t *thread;	// Consumer's thread of execution
   buffer_t *buf;	// Buffer to read from
+  unsigned int read;	// Index to read from the shared buffer at
 } consumer_t;
-
-void out_flush(int fd, char *buf, int length) {
-  ssize_t nbytes;
-  write(fd, buf, length);
-}
 
 /**
  * Main thread target for the
@@ -48,37 +46,50 @@ void *cons_target(void *args) {
 
   // Try to open the output file to write to
   int fd;
-  if ((fd = open(c->out_file, O_WRONLY | O_CREAT | O_TRUNC)) == -1) {
+  if ((fd = open(c->out_file, O_WRONLY | O_CREAT | O_TRUNC, 0600)) == -1) {
     fprintf(stderr, "Consumer could not open/create target file %s for writing\n", c->out_file);
     return NULL;
   }
+
+  log("Consumer successfully opened file %s\n", c->out_file);
+
+  unsigned int cur_block = 0;
+  pthread_mutex_t *cur_mutex = &c->buf->buf[0].mutex;
 
   // Wait until there is at least one
   // character available in the shared
   // buffer.
   sem_wait(&c->buf->full_spaces);
-  pthread_mutex_lock(&c->buf->mutex);
+  pthread_mutex_lock(cur_mutex);
 
   // Get the first character from the buffer
-  char ch = c->buf->buf[c->buf->read];
-  c->buf->read = (c->buf->read + 1) % BUFFER_SIZE;
+  char ch = c->buf->buf[0].blk[0];
 
   // Alert the producer that there is
   // a new empty space in the buffer
-  pthread_mutex_unlock(&c->buf->mutex);
+  pthread_mutex_unlock(cur_mutex);
   sem_post(&c->buf->empty_spaces);
+
+  // Increment the index for reading from the buffer
+  c->read = (c->read + 1) % BUFFER_SIZE;
+  
+  log("Consumer received character: %c\n", ch);
 
   // Initialize temporary buffer for writing
   // to the file
-  char temp_buf[CONS_TEMP_BUFFER];
+  char temp_buf[CONS_BUFFER_SIZE];
   int buf_index = 0;
   ssize_t nbytes;
+  unsigned int end_of_block = c->read - (c->read % BLOCK_SIZE) + BLOCK_SIZE;
 
+  // Keep reading bytes until a null
+  // byte is read, which terminates
+  // the file copy
   while (ch != '\0') {
 
     // Flush the buffer to the output
     // file if it is full
-    if (buf_index >= CONS_TEMP_BUFFER) {
+    if (buf_index >= CONS_BUFFER_SIZE) {
       nbytes = write(fd, temp_buf, buf_index);
 
       // If not all the bytes in the buffer
@@ -89,27 +100,41 @@ void *cons_target(void *args) {
 	return NULL;
       }
       buf_index = 0;
+
+      log("Consumer wrote %ld bytes to file %s\n", nbytes, c->out_file);
+    }
+
+    // Increment the block number and mutex if
+    // the consumer reads to a new block
+    if (c->read == end_of_block) {
+      cur_block = (cur_block + 1) % NUM_BLOCKS;
+      cur_mutex = &c->buf->buf[cur_block].mutex;
+      end_of_block = (end_of_block + BLOCK_SIZE) % BUFFER_SIZE;
     }
 
     // Write this character to the
     // temporary buffer
-    temp_buf[buf_index] = ch;
+    temp_buf[buf_index++] = ch;
 
     // Wait until at least one new character
     // is available to read in the buffer
     sem_wait(&c->buf->full_spaces);
-    pthread_mutex_lock(&c->buf->mutex);
+    pthread_mutex_lock(cur_mutex);
 
     // Read the character and increment
     // the read index of the buffer
-    ch = c->buf->buf[c->buf->read];
-    c->buf->read = (c->buf->read + 1) % BUFFER_SIZE;
+    ch = c->buf->buf[cur_block].blk[c->read % BLOCK_SIZE];
 
     // Release the lock and alert the
     // producer that there is a new
     // empty space in the buffer
-    pthread_mutex_unlock(&c->buf->mutex);
+    pthread_mutex_unlock(cur_mutex);
     sem_post(&c->buf->empty_spaces);
+
+    // Increment the index for reading from the buffer
+    c->read = (c->read + 1) % BUFFER_SIZE;
+    
+    log("Consumer received character: %c\n", ch);
   }
 
   // If the buffer still has characters in it,
@@ -120,6 +145,8 @@ void *cons_target(void *args) {
       fprintf(stderr, "Could not write all %d bytes to file %s\n", buf_index, c->out_file);
       return NULL;
     }
+
+    log("Consumer wrote %ld bytes to file %s\n", nbytes, c->out_file);
   }
 
   // Try to close the output file
@@ -128,6 +155,8 @@ void *cons_target(void *args) {
     return NULL;
   }
 
+  log("Consumer closed file %s\n", c->out_file);
+
   return NULL;
 }
 
@@ -135,30 +164,65 @@ void *cons_target(void *args) {
 // to begin the process of reading
 // from the shared buffer and writing
 // the data to an output file.
-int consumer_init(consumer_t *c, char *file_name, buffer_t *buf) {
-  if (file_name == NULL) return 1;
+consumer_t *consumer_init(char *file_name, buffer_t *buf) {
+  if (file_name == NULL) return NULL;
+
+  // Allocate enough heap memory for the
+  // consumer struct
+  consumer_t *ctmp;
+  ctmp = (consumer_t *)malloc(sizeof(consumer_t));
+  if (ctmp == NULL) {
+    perror("Failed to allocate memory for the consumer struct\n");
+    return NULL;
+  }
+  consumer_t *c = ctmp;
+
+  log("Successfully allocated memory for the consumer struct\n");
 
   // Set the output file name and the
   // shared buffer in the consumer struct
   c->out_file = file_name;
   c->buf = buf;
+  c->read = 0;
 
   // Try to initialize the main thread
   // and return 1 if it fails
-  if (pthread_create(&c->thread, NULL, &cons_target, c) != 0) {
-    fprintf(stderr, "Consumer failed to initialize thread\n");
-    return 1;
+  pthread_t *temp;
+  temp = (pthread_t *)malloc(sizeof(pthread_t));
+  if (temp == NULL) {
+    perror("Consumer failed to allocate memory for thread\n");
+    return NULL;
   }
+
+  log("Successfully allocated memory for the consumer thread\n");
+
+  c->thread = temp;
+  if (pthread_create(c->thread, NULL, &cons_target, c) != 0) {
+    fprintf(stderr, "Consumer failed to initialize thread\n");
+    return NULL;
+  }
+
+  log("Successfully started consumer thread\n");
   
-  return 0;
+  return c;
 }
 
 // Function to join on the main
 // thread of the consumer.
 int consumer_join(consumer_t *c) {
 
+  log("Main thread joining on consumer thread\n");
+
   // Join on the internal thread
-  pthread_join(c->thread, NULL);
+  pthread_join(*c->thread, NULL);
+
+  // Free the memory used for the thread
+  free(c->thread);
+
+  // Free the memory used for the consumer struct
+  free(c);
+
+  log("Main thread freed consumer memory\n");
 
   return 0;
 }

@@ -14,7 +14,7 @@
 #ifndef CONSUMER_H_
 #define CONSUMER_H_
 
-#define CONS_TEMP_BUFFER 16
+#define CONS_BUFFER_SIZE 32
 
 // Main struct of this consumer
 // implementation. Contains a pthread
@@ -24,18 +24,17 @@
 typedef struct consumer consumer_t;
 
 /**
- * Function to initialize the consumer
- * struct before the output file
- * saving can begin. This function will
- * begin the process of asynchronously
- * copying the file.
+ * Function to allocate and initialize 
+ * the consumer struct before the 
+ * output file saving can begin. 
+ * This function will begin the 
+ * process of asynchronously copying the file.
  *
- * @param c consumer_t struct to initialize
  * @param file_name the name of the file to write to
  * @param buf the buffer to read from
  * @return 0 if successful, errno otherwise
  */
-int consumer_init(consumer_t *c, char *file_name, buffer_t *buf);
+consumer_t *consumer_init(char *file_name, buffer_t *buf);
 
 /**
  * Joins on the specified

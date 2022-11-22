@@ -9,6 +9,7 @@
  */
 
 #include "buffer.h"
+#include "cpy.h"
 
 #include <assert.h>
 #include <pthread.h>
@@ -21,26 +22,26 @@
 // all the internal variables.
 int buffer_init(buffer_t *b) {
 
-  // Initialize the mutex
-  if (pthread_mutex_init(&b->mutex, NULL) != 0) {
-    perror("Could not initialize the mutex\n");
-    return 1;
+  // Allocate enough memory for the shared
+  // inner buffer
+  b->buf = (block_t *)calloc(NUM_BLOCKS, sizeof(block_t));
+  assert(b->buf);
+
+  log("Successfully allocated memory for the internal buffer\n");
+
+  // Initialize all the mutexes in each block
+  for (int i = 0; i < NUM_BLOCKS; i++) {
+    pthread_mutex_init(&b->buf[i].mutex, NULL);
   }
 
-  // Allocate enough memory for the buffer
-  char *temp = (char *)malloc(BUFFER_SIZE * sizeof(char));
-  assert(temp);
-  b->buf = temp;
+  log("Successfully initialized mutexes for each block in the buffer\n");
 
   // Initialize the two semaphores in the buffer
   sem_init(&b->empty_spaces, 0, BUFFER_SIZE);
   sem_init(&b->full_spaces, 0, 0);
 
-  // Initialize the index
-  // variables to 0
-  b->read = 0;
-  b->write = 0;
-
+  log("Successfully initialized the semaphores for the buffer\n");
+  
   return 0;
 }
 
@@ -51,11 +52,23 @@ int buffer_init(buffer_t *b) {
 int buffer_destroy(buffer_t *b) {
   if (b == NULL) return 1;
 
-  // Destroy the mutex
-  pthread_mutex_destroy(&b->mutex);
+  // Destroy each mutex in the buffer
+  for (int i = 0; i < NUM_BLOCKS; i++) {
+    pthread_mutex_destroy(&b->buf[i].mutex);
+  }
 
-  // Free the buffer
+  log("Main thread destroyed the mutexes in the buffer\n");
+
+  // Free the buffer memory
   free(b->buf);
+
+  log("Main thread freed the memory used for the buffer\n");
+
+  // Destroy the semaphores
+  sem_destroy(&b->empty_spaces);
+  sem_destroy(&b->full_spaces);
+
+  log("Main thread destroyed the semaphores in the buffer\n");
 
   return 0;
 }

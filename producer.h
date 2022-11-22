@@ -14,7 +14,7 @@
 #ifndef PRODUCER_H_
 #define PRODUCER_H_
 
-#define TEMP_BUFFER_SIZE 16
+#define PROD_BUFFER_SIZE 32
 
 // Main struct of this producer
 // implementation. Contains a pthread
@@ -24,16 +24,15 @@
 typedef struct producer producer_t;
 
 /**
- * Function to initialize the producer
- * struct before the file copy
- * can begin.
+ * Function to create and initialize 
+ * the producer struct before the 
+ * file copy can begin.
  *
- * @param p producer_t struct to initialize
  * @param file_name the name of the file to read from
  * @param buf the buffer to write to
- * @return 0 if successful, errno otherwise
+ * @return pointer to struct if successful, NULL otherwise
  */
-int producer_init(producer_t *p, char *file_name, buffer_t *buf);
+producer_t *producer_init(char *file_name, buffer_t *buf);
 
 /**
  * Joins on the specified
