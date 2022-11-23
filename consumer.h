@@ -14,7 +14,7 @@
 #ifndef CONSUMER_H_
 #define CONSUMER_H_
 
-#define CONS_BUFFER_SIZE 32
+#define CONS_BUFFER_SIZE 64
 
 // Main struct of this consumer
 // implementation. Contains a pthread

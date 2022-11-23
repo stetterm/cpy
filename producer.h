@@ -14,7 +14,7 @@
 #ifndef PRODUCER_H_
 #define PRODUCER_H_
 
-#define PROD_BUFFER_SIZE 32
+#define PROD_BUFFER_SIZE 64
 
 // Main struct of this producer
 // implementation. Contains a pthread

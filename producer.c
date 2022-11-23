@@ -45,40 +45,61 @@ void send_data(producer_t *p, char *d, int length) {
   // Get the block number and mutex
   // for the block the producer wants
   // to write to
-  unsigned int cur_block = p->write / NUM_BLOCKS;
+  unsigned int cur_block = p->write / BLOCK_SIZE;
   pthread_mutex_t *cur_mutex = &p->buf->buf[cur_block].mutex;
   unsigned int end_of_block = p->write - (p->write % BLOCK_SIZE) + BLOCK_SIZE;
 
+  // Wait until there are empty spaces in
+  // the buffer, and then acquire the mutex lock
+  sem_wait(&p->buf->empty_spaces);
+  pthread_mutex_lock(cur_mutex);
+
+  log("Producer got the mutex lock on block %u\n", cur_block);
+  
   for (int i = 0; i < length; i++) {
-    
-    // Wait until there are empty spaces in
-    // the buffer, and then acquire the mutex lock
-    sem_wait(&p->buf->empty_spaces);
-    pthread_mutex_lock(cur_mutex);
 
     // Write a new byte in the buffer and
     // increment the field variables
     p->buf->buf[cur_block].blk[p->write % BLOCK_SIZE] = d[i];
 
-    // Alert the consumer about the new
-    // characters to read and release
-    // the mutex lock
-    pthread_mutex_unlock(cur_mutex);
-    sem_post(&p->buf->full_spaces);
-    
     // Increment the index for writing to the buffer
     p->write = (p->write + 1) % BUFFER_SIZE;
+  
+    //log("Producer wrote character %c to buffer\n", d[i]);
     
+    // Alert the consumer that there is a new character
+    // available to be read in the buffer
+    sem_post(&p->buf->full_spaces);
+
+    // If there are no spaces available, give up
+    // the mutex lock and wait until there are
+    // spaces available. Once at least one space
+    // is available, get the mutex lock again.
+    if (sem_trywait(&p->buf->empty_spaces) == -1) {
+      pthread_mutex_unlock(cur_mutex);
+      log("Producer ran out of buffer space\n");
+      sem_wait(&p->buf->empty_spaces);
+      pthread_mutex_lock(cur_mutex);
+    }
+
     // If the loop has entered a new block,
     // change the mutex and cur_block
     if (p->write == end_of_block) {
+      pthread_mutex_unlock(cur_mutex);
       cur_block = (cur_block + 1) % NUM_BLOCKS;
       cur_mutex = &p->buf->buf[cur_block].mutex;
       end_of_block = (end_of_block + BLOCK_SIZE) % BUFFER_SIZE;
+      log("Producer reached end of block, new end of block is %u\n", end_of_block);
+      pthread_mutex_lock(cur_mutex);
     }
 
-    log("Producer wrote character %c to buffer\n", d[i]);
   }
+
+  // Release the lock on the last block
+  // being written to
+  pthread_mutex_unlock(cur_mutex);
+
+  log("Producer release mutex lock\n");
 }
 
 /** 

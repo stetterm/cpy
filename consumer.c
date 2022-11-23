@@ -62,18 +62,24 @@ void *cons_target(void *args) {
   sem_wait(&c->buf->full_spaces);
   pthread_mutex_lock(cur_mutex);
 
+  log("Consumer got the mutex lock on block %u\n", cur_block);
+
   // Get the first character from the buffer
   char ch = c->buf->buf[0].blk[0];
-
-  // Alert the producer that there is
-  // a new empty space in the buffer
-  pthread_mutex_unlock(cur_mutex);
-  sem_post(&c->buf->empty_spaces);
 
   // Increment the index for reading from the buffer
   c->read = (c->read + 1) % BUFFER_SIZE;
   
-  log("Consumer received character: %c\n", ch);
+  sem_post(&c->buf->empty_spaces);
+
+  if (sem_trywait(&c->buf->full_spaces) == -1) {
+    pthread_mutex_unlock(cur_mutex);
+    log("Consumer ran out of buffer space to read\n");
+    sem_wait(&c->buf->full_spaces);
+    pthread_mutex_lock(cur_mutex);
+  }
+
+  //log("Consumer received character: %c\n", ch);
 
   // Initialize temporary buffer for writing
   // to the file
@@ -81,6 +87,17 @@ void *cons_target(void *args) {
   int buf_index = 0;
   ssize_t nbytes;
   unsigned int end_of_block = c->read - (c->read % BLOCK_SIZE) + BLOCK_SIZE;
+  
+  // Increment the block number and mutex if
+  // the consumer reads to a new block
+  if (c->read == end_of_block) {
+    pthread_mutex_unlock(cur_mutex);
+    cur_block = (cur_block + 1) % NUM_BLOCKS;
+    cur_mutex = &c->buf->buf[cur_block].mutex;
+    end_of_block = (end_of_block + BLOCK_SIZE) % BUFFER_SIZE;
+    log("Consumer reached end of block, new end of block is %u\n", end_of_block);
+    pthread_mutex_lock(cur_mutex);
+  }
 
   // Keep reading bytes until a null
   // byte is read, which terminates
@@ -104,38 +121,50 @@ void *cons_target(void *args) {
       log("Consumer wrote %ld bytes to file %s\n", nbytes, c->out_file);
     }
 
-    // Increment the block number and mutex if
-    // the consumer reads to a new block
-    if (c->read == end_of_block) {
-      cur_block = (cur_block + 1) % NUM_BLOCKS;
-      cur_mutex = &c->buf->buf[cur_block].mutex;
-      end_of_block = (end_of_block + BLOCK_SIZE) % BUFFER_SIZE;
-    }
-
+    
     // Write this character to the
     // temporary buffer
     temp_buf[buf_index++] = ch;
-
-    // Wait until at least one new character
-    // is available to read in the buffer
-    sem_wait(&c->buf->full_spaces);
-    pthread_mutex_lock(cur_mutex);
 
     // Read the character and increment
     // the read index of the buffer
     ch = c->buf->buf[cur_block].blk[c->read % BLOCK_SIZE];
 
-    // Release the lock and alert the
-    // producer that there is a new
-    // empty space in the buffer
-    pthread_mutex_unlock(cur_mutex);
-    sem_post(&c->buf->empty_spaces);
-
     // Increment the index for reading from the buffer
     c->read = (c->read + 1) % BUFFER_SIZE;
     
-    log("Consumer received character: %c\n", ch);
+    // Increment the semaphore containing the number
+    // of empty positions in the buffer
+    sem_post(&c->buf->empty_spaces);
+
+    // Determine if there are any spaces left to read,
+    // and if not, release the lock and wait until
+    // there are spaces and finally reacquire the lock
+    if (sem_trywait(&c->buf->full_spaces) == -1) {
+      pthread_mutex_unlock(cur_mutex);
+      log("Consumer ran out of buffer space to read\n");
+      if (ch == '\0') break;
+      sem_wait(&c->buf->full_spaces);
+      pthread_mutex_lock(cur_mutex);
+    }
+
+    // Increment the block and mutex being used
+    // to read from
+    if (c->read == end_of_block) {
+      pthread_mutex_unlock(cur_mutex);
+      cur_block = (cur_block + 1) % NUM_BLOCKS;
+      cur_mutex = &c->buf->buf[cur_block].mutex;
+      end_of_block = (end_of_block + BLOCK_SIZE) % BUFFER_SIZE;
+      log("Consumer reached end of block, new end of block is %u\n", end_of_block);
+      pthread_mutex_lock(cur_mutex);
+    }
+
+    
+    //log("Consumer received character: %c\n", ch);
   }
+
+  // Release the mutex lock
+  pthread_mutex_unlock(cur_mutex);
 
   // If the buffer still has characters in it,
   // flush them out to the output file

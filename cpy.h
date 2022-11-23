@@ -15,7 +15,7 @@
 // to standard error.
 // Warning: This will log every character
 // that is transmitted.
-#define ENABLE_LOGGER 1
+#define ENABLE_LOGGER 0
 
 // Logger used to print out debug
 // information.
